@@ -12,6 +12,7 @@ import {
   getUsersByIds,
   login,
   logout,
+  saveUserPreferences,
   signup,
   updateProfile,
   watchAuth
@@ -21,6 +22,7 @@ import {
   analyzeQuestionPaper,
   createNote,
   deleteNote,
+  getAllComments,
   getCommentsForNote,
   getFollowRequests,
   getNotesForUser,
@@ -40,6 +42,12 @@ const defaultFilterPreferences = {
   visibility: "all",
   tag: "all"
 };
+
+const getCommentCountMap = (comments = []) =>
+  comments.reduce((accumulator, comment) => {
+    accumulator[comment.noteId] = (accumulator[comment.noteId] || 0) + 1;
+    return accumulator;
+  }, {});
 
 const getSearchScore = (note, queryText) => {
   if (!queryText) return 0;
@@ -79,6 +87,44 @@ const applyFeedFilters = (feed, queryText, filterPreferences) => {
   });
 };
 
+const getPreferenceMatchScore = (note, preferences) => {
+  if (!preferences) return 0;
+
+  let score = 0;
+
+  if (preferences.tag !== "all" && (note.tags || []).includes(preferences.tag)) {
+    score += 8;
+  }
+
+  if (preferences.visibility !== "all" && note.visibility === preferences.visibility) {
+    score += 4;
+  }
+
+  return score;
+};
+
+const getTrendingPicks = (feed, comments, preferences) => {
+  const commentCountMap = getCommentCountMap(comments);
+
+  return [...feed]
+    .sort((left, right) => {
+      const leftScore =
+        (left.metrics?.likes || 0) * 5 +
+        (commentCountMap[left.id] || 0) * 6 +
+        (left.metrics?.saves || 0) * 3 +
+        (left.metrics?.views || 0) +
+        getPreferenceMatchScore(left, preferences);
+      const rightScore =
+        (right.metrics?.likes || 0) * 5 +
+        (commentCountMap[right.id] || 0) * 6 +
+        (right.metrics?.saves || 0) * 3 +
+        (right.metrics?.views || 0) +
+        getPreferenceMatchScore(right, preferences);
+      return rightScore - leftScore;
+    })
+    .slice(0, 5);
+};
+
 export default function App() {
   const [firebaseReady] = useState(isFirebaseConfigured);
   const [authUser, setAuthUser] = useState(null);
@@ -97,6 +143,7 @@ export default function App() {
   const [comments, setComments] = useState([]);
   const [modalConfig, setModalConfig] = useState(null);
   const [allVisibleNotes, setAllVisibleNotes] = useState([]);
+  const [allComments, setAllComments] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterPreferences, setFilterPreferences] = useState(defaultFilterPreferences);
 
@@ -105,12 +152,13 @@ export default function App() {
     const currentProfile = await getProfile(currentUser.uid);
     const following = currentProfile?.following || [];
 
-    const [feedResult, mineResult, topNotesResult, pendingRequestsResult] =
+    const [feedResult, mineResult, topNotesResult, pendingRequestsResult, allCommentsResult] =
       await Promise.allSettled([
         getVisibleNotes({ currentUserId: currentUser.uid, following }),
         getNotesForUser(currentUser.uid),
         getTrendingNotes({ currentUserId: currentUser.uid, following }),
-        getFollowRequests(currentUser.uid)
+        getFollowRequests(currentUser.uid),
+        getAllComments()
       ]);
 
     const feed = feedResult.status === "fulfilled" ? feedResult.value : [];
@@ -121,9 +169,14 @@ export default function App() {
       pendingRequestsResult.status === "fulfilled"
         ? pendingRequestsResult.value
         : [];
+    const commentEntries =
+      allCommentsResult.status === "fulfilled"
+        ? allCommentsResult.value
+        : [];
 
     setProfile(currentProfile);
     setAllVisibleNotes(feed);
+    setAllComments(commentEntries);
     setNotes(applyFeedFilters(feed, searchQuery, filterPreferences));
     setMyNotes(mine);
     setSavedNotes(feed.filter((note) => note.savedBy?.includes(currentUser.uid)));
@@ -133,16 +186,26 @@ export default function App() {
 
   useEffect(() => {
     if (!authUser) return;
-    const storedPreferences = window.localStorage.getItem(
-      `smart-notes-filters-${authUser.uid}`
-    );
-    if (!storedPreferences) return;
+    if (profile?.searchPreferences) {
+      setFilterPreferences({
+        ...defaultFilterPreferences,
+        ...profile.searchPreferences
+      });
+      return;
+    }
+
+    const storedPreferences = window.localStorage.getItem(`smart-notes-filters-${authUser.uid}`);
+    if (!storedPreferences) {
+      setFilterPreferences(defaultFilterPreferences);
+      return;
+    }
+
     try {
       setFilterPreferences(JSON.parse(storedPreferences));
     } catch (error) {
       console.error(error);
     }
-  }, [authUser]);
+  }, [authUser, profile?.searchPreferences]);
 
   useEffect(() => {
     setNotes(applyFeedFilters(allVisibleNotes, searchQuery, filterPreferences));
@@ -347,7 +410,16 @@ export default function App() {
         comments={comments}
         filterPreferences={filterPreferences}
         notes={notes}
+        savedPreferences={profile?.searchPreferences || null}
         onAddComment={handleAddComment}
+        onApplySavedPreferences={() => {
+          if (!profile?.searchPreferences) return;
+          setFilterPreferences({
+            ...defaultFilterPreferences,
+            ...profile.searchPreferences
+          });
+          setMessage("Showing posts based on your saved preference.");
+        }}
         onFilterChange={(partial) =>
           setFilterPreferences((current) => ({ ...current, ...partial }))
         }
@@ -369,21 +441,40 @@ export default function App() {
         }}
         onLoadComments={loadComments}
         onOpenProfile={() => setActiveTab("profile")}
-        onRespond={async (request, accept) => {
+        onRespond={async (request, accept, followBack = false) => {
           await respondToFollowRequest({
             requestId: request.id,
             senderId: request.senderId,
             receiverId: request.receiverId,
             accept
           });
+          if (accept && followBack) {
+            await sendFollowRequest({
+              senderId: authUser.uid,
+              receiverId: request.senderId,
+              senderName: profile?.name || authUser.email
+            });
+          }
           await refreshData(authUser);
+          setMessage(
+            accept
+              ? followBack
+                ? `Request accepted and follow back sent to ${request.senderName}.`
+                : `Request accepted for ${request.senderName}.`
+              : `Request rejected for ${request.senderName}.`
+          );
         }}
-        onSavePreferences={() => {
+        onSavePreferences={async () => {
+          await saveUserPreferences(authUser.uid, filterPreferences);
           window.localStorage.setItem(
             `smart-notes-filters-${authUser.uid}`,
             JSON.stringify(filterPreferences)
           );
-          setMessage("Search preferences saved for this user.");
+          setProfile((current) => ({
+            ...current,
+            searchPreferences: filterPreferences
+          }));
+          setMessage("Preference saved successfully.");
         }}
         onSave={async (note) => {
           await toggleSave(note, authUser.uid);
@@ -401,10 +492,10 @@ export default function App() {
                 (note.metrics?.likes || 0) +
                 (note.metrics?.saves || 0),
               0
-            ) + comments.length,
+            ) + allComments.filter((comment) => myNotes.some((note) => note.id === comment.noteId)).length,
           totalViews: myNotes.reduce((sum, note) => sum + (note.metrics?.views || 0), 0)
         }}
-        trending={trending}
+        trending={getTrendingPicks(notes, allComments, profile?.searchPreferences)}
       />
     );
   }, [
@@ -419,7 +510,9 @@ export default function App() {
     saving,
     savedNotes,
     selectedNoteId,
-    trending
+    trending,
+    allComments,
+    filterPreferences
   ]);
 
   if (!firebaseReady) {
