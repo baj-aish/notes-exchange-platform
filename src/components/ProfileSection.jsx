@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export default function ProfileSection({
   profile,
@@ -6,6 +6,7 @@ export default function ProfileSection({
   onShowFollowers,
   onShowFollowing
 }) {
+  const fileInputRef = useRef(null);
   const [form, setForm] = useState({
     name: "",
     bio: "",
@@ -32,17 +33,22 @@ export default function ProfileSection({
         <div className="profile-banner" />
         <div className="profile-header">
           <div className="profile-identity">
-            <div className="profile-avatar">
+            <button
+              className="profile-avatar profile-avatar-button"
+              onClick={() => fileInputRef.current?.click()}
+              type="button"
+            >
               {profile?.avatarUrl ? (
                 <img alt="Profile" className="profile-image" src={profile.avatarUrl} />
               ) : (
                 (profile?.name || "S").slice(0, 1).toUpperCase()
               )}
-            </div>
+            </button>
             <div>
               <p className="eyebrow">Personal Profile</p>
               <h1>{profile?.name || "Student"}</h1>
               <p className="muted">{profile?.email}</p>
+              <p className="muted">Tap the circular badge to update your profile photo.</p>
             </div>
           </div>
           <div className="toolbar">
@@ -104,24 +110,23 @@ export default function ProfileSection({
           />
         </label>
 
-        <label className="field">
-          <span>Update profile photo</span>
-          <input
-            accept="image/*"
-            type="file"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (!file) return;
-              const reader = new FileReader();
-              reader.onload = () =>
-                setForm((current) => ({
-                  ...current,
-                  avatarUrl: reader.result
-                }));
-              reader.readAsDataURL(file);
-            }}
-          />
-        </label>
+        <input
+          accept="image/*"
+          className="hidden-input"
+          ref={fileInputRef}
+          type="file"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () =>
+              setForm((current) => ({
+                ...current,
+                avatarUrl: reader.result
+              }));
+            reader.readAsDataURL(file);
+          }}
+        />
 
         {form.avatarUrl ? (
           <div className="profile-photo-preview">
