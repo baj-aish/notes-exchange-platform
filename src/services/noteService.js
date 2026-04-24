@@ -237,3 +237,8 @@ export const getCommentsForNote = async (noteId) => {
     .map((entry) => ({ id: entry.id, ...entry.data() }))
     .filter((comment) => comment.noteId === noteId);
 };
+
+export const getAllComments = async () => {
+  const snapshot = await getDocs(query(commentsRef, orderBy("createdAt", "asc")));
+  return snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
+};
