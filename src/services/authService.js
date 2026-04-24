@@ -68,6 +68,14 @@ export const updateProfile = async (uid, payload) => {
   });
 };
 
+export const saveUserPreferences = async (uid, preferences) => {
+  await updateDoc(doc(db, "users", uid), {
+    searchPreferences: preferences,
+    preferencesSavedAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+};
+
 export const getAllUsers = async () => {
   const snapshot = await getDocs(query(collection(db, "users")));
   return snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
